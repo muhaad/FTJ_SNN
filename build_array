@@ -2,18 +2,22 @@
 import subprocess
 import os
 import pexpect
-file_name = "lif_array_4x4"
+rows = 196
+cols = 10
+file_name = f"lif_array_{rows}x{cols}"
 path = f"/home/muhaad/Public/{file_name}/"
 hspice_path = "/opt-shared-v2/eda/synopsys/hspice/current/hspice/bin/hspice"
-def run_hspice(path, file_name):
+
+def run_hspice(path, input_file_name, output_file_name):
     env = os.environ.copy()
     env["PATH"] = "/opt/eda/bin/magic:/opt/eda/synopsys/wv/current/bin:/opt/eda/bin/irsim:/opt/eda/synopsys/hspice/current/hspice/bin:/opt/eda/cadence/SPECTRE231/tools/bin:/opt/eda/cadence/:SPECTRE231/tools/bin:/opt/eda/cadence/IC231/tools/dfII/bin:/opt/eda/cadence/IC231/bin:/opt/eda/cadence/INNOVUS211/bin:/opt/eda/cadence/GENUS211/bin:opt/eda/synopsys/icc2/V-2023.12-SP4/bin/:/opt/eda/fpga/intelFPGA_lite/current/quartus/bin:/opt/eda/fpga/intelFPGA_pro/current/modelsim_ase/bin:/opt/eda/cadence/jasper_2018.09p001/bin:/opt/eda/synopsys/current/vcs-mx/bin:/opt/eda/synopsys/current/syn/bin:/opt/eda/synopsys/current/txs/bin:/opt/eda/synopsys/sentaurus/current/bin:/opt/eda/synopsys/customcompiler/current/bin:/opt/eda/synopsys/taurus_medici/current/bin:/opt/eda/synopsys/pts/current/bin:/usr/local/go/bin:/opt/eda/mmi/current/bin:/opt/eda/synopsys/vcs-mx/current/bin:/opt/eda/synopsys/syn/current/bin:/home/muhaad/bin:/usr/bin:/bin:/usr/local/bin:/opt/bin:/opt/eda/bin:/opt/eda/cadtools/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin"
     child = pexpect.spawn("tcsh", encoding="utf-8")
 
     child.logfile = open("tcsh_log.txt", "w")  # or: sys.stdout
-    print(f"hspice -i {path}{file_name}.sp -o {path}{file_name}.lis")
-    child.sendline(f"hspice -i {path}{file_name}.sp -o {path}{file_name}.lis")
-    child.expect(pexpect.EOF, timeout=60)
+    child.sendline(f"hspice -i {path}{input_file_name}.sp -o {path}{output_file_name}.lis ; exit")
+    child.expect(pexpect.EOF, timeout = None)
+    child.close()
+    print(output_file_name)
 
     #print(child.before)
 
@@ -41,11 +45,11 @@ def pwl(pulses, voltage, zero_level=0):     #accepts lists of (delay, width) or 
     pwl_str = "PWL(" + " ".join([f"{t}n {v}V" for t, v in points]) + ")"
     return pwl_str
 
-def generate_hspice(filename):
+def generate_hspice(filename, weights = []):
 
     ##global variables##
-    rows=4
-    cols=4
+    rows=196
+    cols=1
 
     reset_time = 100                ##reset pulse time in nanoseconds
     time_counter = 10               #current program time. Initialization value determines delay until reset pulse from simulation start
@@ -87,9 +91,12 @@ def generate_hspice(filename):
         for i in range(1, rows + 1):
             row_program_time = 0
             pulses = []
-            for j in range(1, cols + 1):
-                pulse_width = 10
-                pulse = (time_counter + row_program_time, pulse_width)          #place holder for weight (pulse width)
+            for j in range(1, cols + 1): 
+                if(weights):
+                    pulse_width = 10                    #place holder for pulse width
+                else:
+                    pulse_width = 10                    #default pulse width
+                pulse = (time_counter + row_program_time, pulse_width)         
                 pulses.append(pulse)        
                 row_program_time += 10 + pulse_width                     #delay between each device programming (delay + pulse width)
             
@@ -124,7 +131,7 @@ def generate_hspice(filename):
             f.write(f"X{i} Vin{i} Vout{i} Vdd LIF C1_cap=1p C2_cap=10p\n")
             f.write(f"E{i} N{i} 0 VCVS Vout{i} 0 4\n")
             f.write(f"I{i} 0 Vin{i} PWL(0n 0A {time_counter}n 0A {time_counter + 0.001}n 10u)\n")
-            f.write(f"M{i} Vspike N{i} row{i} row{i} nfet L=120n W=1u\n\n")
+            f.write(f"ML{i} Vspike N{i} row{i} row{i} nfet L=120n W=1u\n\n")
 
         # Input Neuron LIFs
         for i in range(1, cols + 1):
@@ -134,7 +141,7 @@ def generate_hspice(filename):
         # Synapses (FTJs) and their connections
         for i in range(1, rows + 1):
             for j in range(1, cols + 1):
-                f.write(f"X{i}{j} row{i} T{i}{j} S{i}{j} BTOFTJ\n")
+                f.write(f"X_FTJ_{i}_{j} row{i} T{i}{j} S{i}{j} BTOFTJ\n")
         f.write("\n")
 
         # Access transistors for each synapse
@@ -142,7 +149,7 @@ def generate_hspice(filename):
             for j in range(1, cols + 1):
                 #f.write(f"M{i}{j} row{i} Vt_{i}_{j} T{i}{j} T{i}{j} nfet L=120n W=2u\n")
                 #f.write(f"M{i}{j} row{i} Vr T{i}{j} T{i}{j} nfet L=120n W=2u\n")
-                f.write(f"M{i}{j} T{i}{j} Vt_{i}_{j} col{j} col{j} nfet L=120n W=2u\n")
+                f.write(f"M_{i}_{j} T{i}{j} Vt_{i}_{j} col{j} col{j} nfet L=120n W=2u\n")
         f.write("\n")
 
         # LIF Access transistors
@@ -163,20 +170,21 @@ def generate_hspice(filename):
         f.write(f".tran 1n {run_time}n\n\n")
 
         # Print statements
-        for i in range(1, rows + 1):
-            f.write(f".print tran V(row{i})\n")
-        for j in range(1, cols + 1):
-            f.write(f".print tran V(VinN{j})\n")
-            f.write(f".print tran V(VoutN{j})\n")
-            f.write(f".print tran V(col{j})\n")
-        for i in range(1, rows + 1):
-            for j in range(1, cols + 1):
-                f.write(f".print tran V(S{i}{j})\n")
-        for i in range(1, rows + 1):
-            f.write(f".print tran V(Vout{i})\n")
+
+        # for i in range(1, rows + 1):
+        #     f.write(f".print tran V(row{i})\n")
+        # for j in range(1, cols + 1):
+        #     f.write(f".print tran V(VinN{j})\n")
+        #     f.write(f".print tran V(VoutN{j})\n")
+        #     f.write(f".print tran V(col{j})\n")
+        # for i in range(1, rows + 1):
+        #     for j in range(1, cols + 1):
+        #         f.write(f".print tran V(S{i}{j})\n")
+        # for i in range(1, rows + 1):
+        #     f.write(f".print tran V(Vout{i})\n")
         f.write("\n")
 
-        if(True):
+        if(False):
             for i in range(1, rows +1):
                 f.write(f".print tran V(R{i}G)\n") #nmos
                 f.write(f".print tran V(R{i}P)\n")   
@@ -190,16 +198,22 @@ def generate_hspice(filename):
                     f.write(f".print tran V(T{i}{j})\n")
 
         f.write(f".print tran V(Vc)\n")
+        
      
-
         # Initial conditions
         for i in range(1, rows + 1):
             f.write(f".IC V(Vin{i}) = 0V\n")
         f.write("\n.end\n")
 
 def main():
-    generate_hspice(file_name)
-    run_hspice(path, file_name)
+    if(rows > 10 or cols > 10):
+        for i in range(1, cols + 1):
+            generate_hspice(file_name)
+            output_file_name = f"lif_array_{rows}_{i}"
+            run_hspice(path, file_name, output_file_name)
+    else:
+        generate_hspice(file_name)
+        run_hspice(path, file_name, file_name)
 
 
 main()
