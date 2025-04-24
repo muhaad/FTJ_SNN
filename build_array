@@ -82,17 +82,23 @@ def generate_hspice(filename):
 
         pulse_matrix = []                       #pulse matrix for access transistor pulses
 
+        max_row_program_time = 0
         ##row programming pulses##
         for i in range(1, rows + 1):
+            row_program_time = 0
             pulses = []
             for j in range(1, cols + 1):
                 pulse_width = 10
-                pulse = (time_counter, pulse_width)          #place holder for weight (pulse width)
+                pulse = (time_counter + row_program_time, pulse_width)          #place holder for weight (pulse width)
                 pulses.append(pulse)        
-                time_counter += 10 + pulse_width                     #delay between each device programming (delay + pulse width)
+                row_program_time += 10 + pulse_width                     #delay between each device programming (delay + pulse width)
             
             f.write(f"V_R{i}_Vdd R{i}P 0 {pwl(pulses, 0, 5)}\n")         #row pulse programming input into PMOS
             pulse_matrix.append(pulses)
+            if(row_program_time > max_row_program_time):
+                max_row_program_time = row_program_time
+
+        time_counter += max_row_program_time
 
            ##short FTJs to ground during programming (after reset pulse and before inferencing)
         for i in range(1, cols + 1):
