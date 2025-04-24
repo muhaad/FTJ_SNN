@@ -3,7 +3,7 @@ import subprocess
 import os
 import pexpect
 rows = 196
-cols = 10
+cols = 1
 file_name = f"lif_array_{rows}x{cols}"
 path = f"/home/muhaad/Public/{file_name}/"
 hspice_path = "/opt-shared-v2/eda/synopsys/hspice/current/hspice/bin/hspice"
@@ -54,7 +54,8 @@ def generate_hspice(filename, weights = []):
     reset_time = 100                ##reset pulse time in nanoseconds
     time_counter = 10               #current program time. Initialization value determines delay until reset pulse from simulation start
     time_init = time_counter
-    run_time = 500                #runtime of simulation in nanoseconds
+    run_time = 1000                #runtime of simulation in nanoseconds
+    batch = 10                      #number of rows included in each reset batch
 
     dir = os.path.dirname(path)
 
@@ -76,12 +77,16 @@ def generate_hspice(filename, weights = []):
         #control signals
 
         #reset
+
         for i in range(1, rows + 1):
             f.write(f"V_R{i}_ground R{i}G 0 {pwl((time_counter, reset_time), 5, 0)}\n") #nmos
-        for i in range(1, cols+1):
-            f.write(f"V_C{i}_Vdd C{i}P 0 {pwl((time_counter, reset_time), 0, 5)}\n")   #pmos
+            if(i % batch == 0):                                                            #this could cause issues if rows = 10     
+                time_counter += reset_time + 1
 
-        time_counter += reset_time + 10         #delay between reset and programming phases
+        for i in range(1, cols + 1):
+            f.write(f"V_C{i}_Vdd C{i}P 0 {pwl((time_init, time_counter - time_init), 0, 8)}\n")   #pmos
+
+        #time_counter += reset_time + 10         #delay between reset and programming phases
         program_start = time_counter
 
         pulse_matrix = []                       #pulse matrix for access transistor pulses
@@ -116,7 +121,7 @@ def generate_hspice(filename, weights = []):
         ##access transistors##
         for i in range(1, rows + 1):
             for j in range(1, cols + 1):
-                pulse = [(time_init,reset_time)]                           #add pulse during reset because that is needed for some reason     
+                pulse = [(time_init + int(i/batch)*(reset_time + 1),reset_time)]                           #add pulse during reset because that is needed for some reason     
                 pulse.append(pulse_matrix[i-1][j-1])                     #add pulse timed at FTJ row programming pulse
                 pulse.append((time_counter, run_time - time_counter))      #hold the access transistors high for inferencing
                 f.write(f"Vtran{i}_{j} Vt_{i}_{j} 0 {pwl(pulse, 5, 0)}\n")
@@ -147,8 +152,6 @@ def generate_hspice(filename, weights = []):
         # Access transistors for each synapse
         for i in range(1, rows + 1):
             for j in range(1, cols + 1):
-                #f.write(f"M{i}{j} row{i} Vt_{i}_{j} T{i}{j} T{i}{j} nfet L=120n W=2u\n")
-                #f.write(f"M{i}{j} row{i} Vr T{i}{j} T{i}{j} nfet L=120n W=2u\n")
                 f.write(f"M_{i}_{j} T{i}{j} Vt_{i}_{j} col{j} col{j} nfet L=120n W=2u\n")
         f.write("\n")
 
@@ -156,14 +159,14 @@ def generate_hspice(filename, weights = []):
         for i in range(1, cols + 1):
             f.write(f"MC{i} col{i} Vc VinN{i} VinN{i} nfet L=120n W=2u\n")
 
-        # Programing Transistors
+        # Programming Transistors
         for i in range(1, rows + 1):
             f.write(f"MR{i}G row{i} R{i}G 0 0 nfet L=120n W=2u\n")
-            f.write(f"MR{i}P row{i} R{i}P Vr Vr pfet L=120n W=2u\n")
+            f.write(f"MR{i}P row{i} R{i}P Vr Vr pfet L=120n W=2u\n")        
         
         for i in range(1, cols + 1):
-           f.write(f"MC{i}P col{i} C{i}P Vr Vr pfet L=120n W=2u\n")
-           f.write(f"MC{i}G col{i} C{i}G 0 0 nfet L=120n W=2u\n")
+           f.write(f"MC{i}P col{i} C{i}P Vr Vr pfet L=120n W=8u\n")
+           f.write(f"MC{i}G col{i} C{i}G 0 0 nfet L=120n W=4u\n")
 
 
         # Transient simulation
@@ -171,20 +174,20 @@ def generate_hspice(filename, weights = []):
 
         # Print statements
 
-        # for i in range(1, rows + 1):
-        #     f.write(f".print tran V(row{i})\n")
-        # for j in range(1, cols + 1):
-        #     f.write(f".print tran V(VinN{j})\n")
-        #     f.write(f".print tran V(VoutN{j})\n")
-        #     f.write(f".print tran V(col{j})\n")
-        # for i in range(1, rows + 1):
-        #     for j in range(1, cols + 1):
-        #         f.write(f".print tran V(S{i}{j})\n")
-        # for i in range(1, rows + 1):
-        #     f.write(f".print tran V(Vout{i})\n")
+        for i in range(1, rows + 1):
+            f.write(f".print tran V(row{i})\n")
+        for j in range(1, cols + 1):
+            f.write(f".print tran V(VinN{j})\n")
+            f.write(f".print tran V(VoutN{j})\n")
+            f.write(f".print tran V(col{j})\n")
+        for i in range(1, rows + 1):
+            for j in range(1, cols + 1):
+                f.write(f".print tran V(S{i}{j})\n")
+        for i in range(1, rows + 1):
+            f.write(f".print tran V(Vout{i})\n")
         f.write("\n")
 
-        if(False):
+        if(True):
             for i in range(1, rows +1):
                 f.write(f".print tran V(R{i}G)\n") #nmos
                 f.write(f".print tran V(R{i}P)\n")   
@@ -211,6 +214,7 @@ def main():
             generate_hspice(file_name)
             output_file_name = f"lif_array_{rows}_{i}"
             run_hspice(path, file_name, output_file_name)
+
     else:
         generate_hspice(file_name)
         run_hspice(path, file_name, file_name)
