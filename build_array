@@ -26,9 +26,18 @@ def read_weights(filename):
     weights = []
     with open(filename, 'r') as file:
         lines = file.readlines()
-        for line in line:
+        for line in lines:
             col_weights = []
-            line.strip().split(",")
+            stripped_line = line.strip().split(",")
+            col_weights = [float(int(i)*1.5) for i in stripped_line]
+            weights.append(col_weights)
+    # for column in weights:
+    #     for weight in column:
+    #         print(weight)
+    #     print('\n')
+    return(weights)
+
+    
 
 
 def pwl(pulses, voltage, zero_level=0):     #accepts lists of (delay, width) or just single tuples
@@ -64,7 +73,7 @@ def generate_hspice(filename, weights = []):
     reset_time = 100                ##reset pulse time in nanoseconds
     time_counter = 10               #current program time. Initialization value determines delay until reset pulse from simulation start
     time_init = time_counter
-    run_time = 2000                #runtime of simulation in nanoseconds
+    inference_time = 0                #runtime of simulation in nanoseconds
     batch = 7                      #number of rows included in each reset batch
 
     dir = os.path.dirname(path)
@@ -114,7 +123,7 @@ def generate_hspice(filename, weights = []):
             pulses = []
             for j in range(1, cols + 1): 
                 if(weights):
-                    pulse_width = i % 48                    #place holder for pulse width
+                    pulse_width = weights[i - 1]
                 else:
                     pulse_width = i % 48                    #default pulse width
                 pulse = (time_counter + row_program_time, pulse_width)         
@@ -143,7 +152,7 @@ def generate_hspice(filename, weights = []):
                 #pulse = [(time_init + int(i/batch)*(reset_time + 1),reset_time)]                           #add pulse during reset because that is needed for some reason     
                 pulse = [reset_pulses[i - 1]]
                 pulse.append(pulse_matrix[i-1][j-1])                     #add pulse timed at FTJ row programming pulse
-                pulse.append((time_counter, run_time - time_counter))      #hold the access transistors high for inferencing
+                pulse.append((time_counter, inference_time - 11))      #hold the access transistors high for inferencing
                 f.write(f"Vtran{i}_{j} Vt_{i}_{j} 0 {pwl(pulse, 5, 0)}\n")
 
 
@@ -230,9 +239,11 @@ def generate_hspice(filename, weights = []):
 
 def main():
     if(rows > 10 or cols > 10):
+        weights = read_weights("weights.csv")
+
         for i in range(1, cols + 1):
             now = time.time()
-            generate_hspice(file_name)
+            generate_hspice(file_name, weights [i-1])
             output_file_name = f"lif_array_{rows}_{i}"
             run_hspice(path, file_name, output_file_name)
             print(time.time() - now)
@@ -242,3 +253,4 @@ def main():
 
 
 main()
+
