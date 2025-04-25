@@ -2,7 +2,8 @@
 import subprocess
 import os
 import pexpect
-rows = 196
+import time
+rows = 21
 cols = 1
 file_name = f"lif_array_{rows}x{cols}"
 path = f"/home/muhaad/Public/{file_name}/"
@@ -20,6 +21,15 @@ def run_hspice(path, input_file_name, output_file_name):
     print(output_file_name)
 
     #print(child.before)
+
+def read_weights(filename):
+    weights = []
+    with open(filename, 'r') as file:
+        lines = file.readlines()
+        for line in line:
+            col_weights = []
+            line.strip().split(",")
+
 
 def pwl(pulses, voltage, zero_level=0):     #accepts lists of (delay, width) or just single tuples
 
@@ -48,14 +58,14 @@ def pwl(pulses, voltage, zero_level=0):     #accepts lists of (delay, width) or 
 def generate_hspice(filename, weights = []):
 
     ##global variables##
-    rows=196
-    cols=1
+    global rows
+    global cols
 
     reset_time = 100                ##reset pulse time in nanoseconds
     time_counter = 10               #current program time. Initialization value determines delay until reset pulse from simulation start
     time_init = time_counter
-    run_time = 1000                #runtime of simulation in nanoseconds
-    batch = 10                      #number of rows included in each reset batch
+    run_time = 2000                #runtime of simulation in nanoseconds
+    batch = 7                      #number of rows included in each reset batch
 
     dir = os.path.dirname(path)
 
@@ -78,13 +88,19 @@ def generate_hspice(filename, weights = []):
 
         #reset
 
+        reset_pulses = []           #row reset pulse
+
         for i in range(1, rows + 1):
+            reset_pulses.append((time_counter, reset_time))
             f.write(f"V_R{i}_ground R{i}G 0 {pwl((time_counter, reset_time), 5, 0)}\n") #nmos
             if(i % batch == 0):                                                            #this could cause issues if rows = 10     
                 time_counter += reset_time + 1
+        
+        if(rows % batch != 0):
+            time_counter += reset_time + 1                  #This could cause extra delay if the above if statement is executed on the last loop (rows % batch = 0)
 
         for i in range(1, cols + 1):
-            f.write(f"V_C{i}_Vdd C{i}P 0 {pwl((time_init, time_counter - time_init), 0, 8)}\n")   #pmos
+            f.write(f"V_C{i}_Vdd C{i}P 0 {pwl((0, time_counter - time_init), 0, 8)}\n")   #pmos
 
         #time_counter += reset_time + 10         #delay between reset and programming phases
         program_start = time_counter
@@ -98,9 +114,9 @@ def generate_hspice(filename, weights = []):
             pulses = []
             for j in range(1, cols + 1): 
                 if(weights):
-                    pulse_width = 10                    #place holder for pulse width
+                    pulse_width = i % 48                    #place holder for pulse width
                 else:
-                    pulse_width = 10                    #default pulse width
+                    pulse_width = i % 48                    #default pulse width
                 pulse = (time_counter + row_program_time, pulse_width)         
                 pulses.append(pulse)        
                 row_program_time += 10 + pulse_width                     #delay between each device programming (delay + pulse width)
@@ -109,6 +125,9 @@ def generate_hspice(filename, weights = []):
             pulse_matrix.append(pulses)
             if(row_program_time > max_row_program_time):
                 max_row_program_time = row_program_time
+            if( i % batch == 0):
+                time_counter += max_row_program_time
+                max_row_program_time = 0
 
         time_counter += max_row_program_time
 
@@ -121,7 +140,8 @@ def generate_hspice(filename, weights = []):
         ##access transistors##
         for i in range(1, rows + 1):
             for j in range(1, cols + 1):
-                pulse = [(time_init + int(i/batch)*(reset_time + 1),reset_time)]                           #add pulse during reset because that is needed for some reason     
+                #pulse = [(time_init + int(i/batch)*(reset_time + 1),reset_time)]                           #add pulse during reset because that is needed for some reason     
+                pulse = [reset_pulses[i - 1]]
                 pulse.append(pulse_matrix[i-1][j-1])                     #add pulse timed at FTJ row programming pulse
                 pulse.append((time_counter, run_time - time_counter))      #hold the access transistors high for inferencing
                 f.write(f"Vtran{i}_{j} Vt_{i}_{j} 0 {pwl(pulse, 5, 0)}\n")
@@ -161,16 +181,16 @@ def generate_hspice(filename, weights = []):
 
         # Programming Transistors
         for i in range(1, rows + 1):
-            f.write(f"MR{i}G row{i} R{i}G 0 0 nfet L=120n W=2u\n")
-            f.write(f"MR{i}P row{i} R{i}P Vr Vr pfet L=120n W=2u\n")        
+            f.write(f"MR{i}G row{i} R{i}G 0 0 nfet L=120n W=4u\n")
+            f.write(f"MR{i}P row{i} R{i}P Vr Vr pfet L=120n W=8u\n")        
         
         for i in range(1, cols + 1):
            f.write(f"MC{i}P col{i} C{i}P Vr Vr pfet L=120n W=8u\n")
-           f.write(f"MC{i}G col{i} C{i}G 0 0 nfet L=120n W=4u\n")
+           f.write(f"MC{i}G col{i} C{i}G 0 0 nfet L=120n W=8u\n")
 
 
         # Transient simulation
-        f.write(f".tran 1n {run_time}n\n\n")
+        f.write(f".tran 1n {time_counter}n\n\n")
 
         # Print statements
 
@@ -211,10 +231,11 @@ def generate_hspice(filename, weights = []):
 def main():
     if(rows > 10 or cols > 10):
         for i in range(1, cols + 1):
+            now = time.time()
             generate_hspice(file_name)
             output_file_name = f"lif_array_{rows}_{i}"
             run_hspice(path, file_name, output_file_name)
-
+            print(time.time() - now)
     else:
         generate_hspice(file_name)
         run_hspice(path, file_name, file_name)
