@@ -2,8 +2,12 @@
 import subprocess
 import os
 import pexpect
+import time
+import matplotlib.pyplot as plot
+import re
+import scipy.signal as sig
 rows = 196
-cols = 10
+cols = 98
 file_name = f"lif_array_{rows}x{cols}"
 path = f"/home/muhaad/Public/{file_name}/"
 hspice_path = "/opt-shared-v2/eda/synopsys/hspice/current/hspice/bin/hspice"
@@ -20,6 +24,33 @@ def run_hspice(path, input_file_name, output_file_name):
     print(output_file_name)
 
     #print(child.before)
+
+def read_weights(filename):
+    weights = []
+    with open(filename, 'r') as file:
+        lines = file.readlines()
+        for line in lines:
+            col_weights = []
+            stripped_line = line.strip().split(",")
+            col_weights = [float(int(i)*1.5) for i in stripped_line]
+            weights.append(col_weights)
+    # for column in weights:
+    #     for weight in column:
+    #         print(weight)
+    #     print('\n')
+    return(weights)
+
+
+def read_inputs(filename):
+    inputs = []
+    with open(filename, 'r') as file:
+        lines = file.readlines()
+        inputs = [float(i.strip()) for i in lines]
+
+    # for input in inputs:
+    #     print(input)
+    return(inputs)    
+
 
 def pwl(pulses, voltage, zero_level=0):     #accepts lists of (delay, width) or just single tuples
 
@@ -45,16 +76,17 @@ def pwl(pulses, voltage, zero_level=0):     #accepts lists of (delay, width) or 
     pwl_str = "PWL(" + " ".join([f"{t}n {v}V" for t, v in points]) + ")"
     return pwl_str
 
-def generate_hspice(filename, weights = []):
+def generate_hspice(filename, weights = [], inputs = []):
 
     ##global variables##
-    rows=196
-    cols=1
+    global rows
+    cols = 1
 
     reset_time = 100                ##reset pulse time in nanoseconds
     time_counter = 10               #current program time. Initialization value determines delay until reset pulse from simulation start
     time_init = time_counter
-    run_time = 500                #runtime of simulation in nanoseconds
+    inference_time = 5000                #runtime of simulation in nanoseconds
+    batch = 7                      #number of rows included in each reset batch
 
     dir = os.path.dirname(path)
 
@@ -76,12 +108,22 @@ def generate_hspice(filename, weights = []):
         #control signals
 
         #reset
-        for i in range(1, rows + 1):
-            f.write(f"V_R{i}_ground R{i}G 0 {pwl((time_counter, reset_time), 5, 0)}\n") #nmos
-        for i in range(1, cols+1):
-            f.write(f"V_C{i}_Vdd C{i}P 0 {pwl((time_counter, reset_time), 0, 5)}\n")   #pmos
 
-        time_counter += reset_time + 10         #delay between reset and programming phases
+        reset_pulses = []           #row reset pulse
+
+        for i in range(1, rows + 1):
+            reset_pulses.append((time_counter, reset_time))
+            f.write(f"V_R{i}_ground R{i}G 0 {pwl((time_counter, reset_time), 5, 0)}\n") #nmos
+            if(i % batch == 0):                                                            #this could cause issues if rows = 10     
+                time_counter += reset_time + 1
+        
+        if(rows % batch != 0):
+            time_counter += reset_time + 1                  #This could cause extra delay if the above if statement is executed on the last loop (rows % batch = 0)
+
+        for i in range(1, cols + 1):
+            f.write(f"V_C{i}_Vdd C{i}P 0 {pwl((0, time_counter - time_init), 0, 8)}\n")   #pmos
+
+        #time_counter += reset_time + 10         #delay between reset and programming phases
         program_start = time_counter
 
         pulse_matrix = []                       #pulse matrix for access transistor pulses
@@ -93,9 +135,9 @@ def generate_hspice(filename, weights = []):
             pulses = []
             for j in range(1, cols + 1): 
                 if(weights):
-                    pulse_width = 10                    #place holder for pulse width
+                    pulse_width = weights[i - 1]
                 else:
-                    pulse_width = 10                    #default pulse width
+                    pulse_width = i % 48                    #default pulse width
                 pulse = (time_counter + row_program_time, pulse_width)         
                 pulses.append(pulse)        
                 row_program_time += 10 + pulse_width                     #delay between each device programming (delay + pulse width)
@@ -104,21 +146,25 @@ def generate_hspice(filename, weights = []):
             pulse_matrix.append(pulses)
             if(row_program_time > max_row_program_time):
                 max_row_program_time = row_program_time
+            if( i % batch == 0):
+                time_counter += max_row_program_time
+                max_row_program_time = 0
 
         time_counter += max_row_program_time
 
            ##short FTJs to ground during programming (after reset pulse and before inferencing)
         for i in range(1, cols + 1):
-            f.write(f"V_C{i}_ground C{i}G 0 {pwl((program_start, time_counter - program_start), 5, 0)}\n")
+            f.write(f"V_C{i}_ground C{i}G 0 {pwl((program_start, time_counter - program_start), 8, 0)}\n")
 
         time_counter += 10          ##overlap of access transistor switching w/ shorting column to ground is causing unintentional programming
 
         ##access transistors##
         for i in range(1, rows + 1):
             for j in range(1, cols + 1):
-                pulse = [(time_init,reset_time)]                           #add pulse during reset because that is needed for some reason     
+                #pulse = [(time_init + int(i/batch)*(reset_time + 1),reset_time)]                           #add pulse during reset because that is needed for some reason     
+                pulse = [reset_pulses[i - 1]]
                 pulse.append(pulse_matrix[i-1][j-1])                     #add pulse timed at FTJ row programming pulse
-                pulse.append((time_counter, run_time - time_counter))      #hold the access transistors high for inferencing
+                pulse.append((time_counter, inference_time - 11))      #hold the access transistors high for inferencing
                 f.write(f"Vtran{i}_{j} Vt_{i}_{j} 0 {pwl(pulse, 5, 0)}\n")
 
 
@@ -130,7 +176,7 @@ def generate_hspice(filename, weights = []):
         for i in range(1, rows + 1):
             f.write(f"X{i} Vin{i} Vout{i} Vdd LIF C1_cap=1p C2_cap=10p\n")
             f.write(f"E{i} N{i} 0 VCVS Vout{i} 0 4\n")
-            f.write(f"I{i} 0 Vin{i} PWL(0n 0A {time_counter}n 0A {time_counter + 0.001}n 10u)\n")
+            f.write(f"I{i} 0 Vin{i} PWL(0n 0A {time_counter}n 0A {time_counter + 0.001}n {inputs[i-1]*5}u)\n")      #1.5uA is the lower limit for spiking within 5u
             f.write(f"ML{i} Vspike N{i} row{i} row{i} nfet L=120n W=1u\n\n")
 
         # Input Neuron LIFs
@@ -141,45 +187,43 @@ def generate_hspice(filename, weights = []):
         # Synapses (FTJs) and their connections
         for i in range(1, rows + 1):
             for j in range(1, cols + 1):
-                f.write(f"X_FTJ_{i}_{j} row{i} T{i}{j} S{i}{j} BTOFTJ\n")
+                f.write(f"X_FTJ_{i}_{j} row{i} T{i}_{j} S{i}_{j} BTOFTJ\n")
         f.write("\n")
 
         # Access transistors for each synapse
         for i in range(1, rows + 1):
             for j in range(1, cols + 1):
-                #f.write(f"M{i}{j} row{i} Vt_{i}_{j} T{i}{j} T{i}{j} nfet L=120n W=2u\n")
-                #f.write(f"M{i}{j} row{i} Vr T{i}{j} T{i}{j} nfet L=120n W=2u\n")
-                f.write(f"M_{i}_{j} T{i}{j} Vt_{i}_{j} col{j} col{j} nfet L=120n W=2u\n")
+                f.write(f"M_{i}_{j} T{i}_{j} Vt_{i}_{j} col{j} col{j} nfet L=120n W=2u\n")
         f.write("\n")
 
         # LIF Access transistors
         for i in range(1, cols + 1):
             f.write(f"MC{i} col{i} Vc VinN{i} VinN{i} nfet L=120n W=2u\n")
 
-        # Programing Transistors
+        # Programming Transistors
         for i in range(1, rows + 1):
-            f.write(f"MR{i}G row{i} R{i}G 0 0 nfet L=120n W=2u\n")
-            f.write(f"MR{i}P row{i} R{i}P Vr Vr pfet L=120n W=2u\n")
+            f.write(f"MR{i}G row{i} R{i}G 0 0 nfet L=120n W=2u\n")      #4u
+            f.write(f"MR{i}P row{i} R{i}P Vr Vr pfet L=120n W=8u\n")        
         
         for i in range(1, cols + 1):
-           f.write(f"MC{i}P col{i} C{i}P Vr Vr pfet L=120n W=2u\n")
-           f.write(f"MC{i}G col{i} C{i}G 0 0 nfet L=120n W=2u\n")
-
+           f.write(f"MC{i}P col{i} C{i}P Vr Vr pfet L=120n W=8u\n")
+           f.write(f"MC{i}G col{i} C{i}G 0 0 nfet L=120n W=4u\n")       #8u
+           f.write(f"MC{i}G1 col{i} C{i}G 0 0 nfet L=120n W=4u\n")       #8u
 
         # Transient simulation
-        f.write(f".tran 1n {run_time}n\n\n")
+        f.write(f".tran 10n {time_counter + inference_time}n\n\n")
 
         # Print statements
 
         # for i in range(1, rows + 1):
         #     f.write(f".print tran V(row{i})\n")
-        # for j in range(1, cols + 1):
-        #     f.write(f".print tran V(VinN{j})\n")
-        #     f.write(f".print tran V(VoutN{j})\n")
-        #     f.write(f".print tran V(col{j})\n")
+        for j in range(1, cols + 1):
+            f.write(f".print tran V(VinN{j})\n")
+            f.write(f".print tran V(VoutN{j})\n")
+            #f.write(f".print tran V(col{j})\n")
         # for i in range(1, rows + 1):
         #     for j in range(1, cols + 1):
-        #         f.write(f".print tran V(S{i}{j})\n")
+        #         f.write(f".print tran V(S{i}_{j})\n")
         # for i in range(1, rows + 1):
         #     f.write(f".print tran V(Vout{i})\n")
         f.write("\n")
@@ -195,9 +239,9 @@ def generate_hspice(filename, weights = []):
             for i in range(1, rows + 1):
                 for j in range(1, cols + 1):
                     f.write(f".print tran V(Vt_{i}_{j})\n")
-                    f.write(f".print tran V(T{i}{j})\n")
+                    f.write(f".print tran V(T{i}_{j})\n")
 
-        f.write(f".print tran V(Vc)\n")
+        #f.write(f".print tran V(Vc)\n")
         
      
         # Initial conditions
@@ -205,15 +249,95 @@ def generate_hspice(filename, weights = []):
             f.write(f".IC V(Vin{i}) = 0V\n")
         f.write("\n.end\n")
 
+def read_lis():
+    spike_times = [float(0) for  i in range(cols)]
+    for q in range(1, cols + 1):
+        wv_name = f"lif_array_{rows}_{q}"
+        with open(f"{path}{wv_name}.lis", 'r') as file:
+            lines = file.readlines()
+            processed_lines = [line.strip().split() for line in lines if line.strip()]
+            for i in range(len(processed_lines)):
+                line = processed_lines[i]
+                if(line[0] == "time" and line[1] == "voltage" and processed_lines[i+1][0] == "voutn1"):
+                    j = i+2
+                    time_points = []
+                    volt_points = []
+                    #print(processed_lines[j])
+                    while(any(char.isdigit() for char in processed_lines[j][0])):
+                        point = processed_lines[j]
+                        time_points.append(convert_si_to_number(point[0]))
+                        volt_points.append(convert_si_to_number(point[1]))
+                        j += 1
+                    volt_peaks, _ = sig.find_peaks(volt_points, height = .5, distance= 1)
+                    if(len(volt_peaks) != 0):
+                        spike_times[q-1] = time_points[volt_peaks[0]]*1e6
+                    plot.plot(time_points, volt_points)
+                    for pt in volt_peaks:
+                        plot.axvline(time_points[pt], color='red', linestyle='--', linewidth=1)
+                    plot.xlabel("Time (microseconds)")
+                    plot.ylabel("Voltage (V)")
+                    plot.title(q)
+                    plot.show()
+                    
+    return(spike_times)
+
+
+def convert_si_to_number(si_str):
+ 
+    # Mapping of SI suffixes to their corresponding power of 10
+    si_prefixes = {
+        'p': 1e-12,  # pico
+        'n': 1e-9,   # nano
+        'u': 1e-6,   # micro
+        'm': 1e-3,   # milli
+        '': 1,       # no prefix (default, e.g., "1")
+        'k': 1e3,    # kilo
+        'M': 1e6,    # mega
+        'G': 1e9,    # giga
+        'T': 1e12    # tera
+    }
+    
+    # Use regex to separate the number and the suffix
+    match = re.match(r'([0-9.]+)([a-zA-Z]*)', si_str.strip())
+    number_part = match.group(1)  # Numeric part (including decimal)
+    suffix_part = match.group(2)  # SI suffix part
+    
+    # Convert the number part to a float
+    number_value = float(number_part)
+    
+    # Get the corresponding multiplier from the SI prefixes
+    multiplier = si_prefixes.get(suffix_part, 1)
+    
+    # Return the number multiplied by the appropriate power of 10
+    return number_value * multiplier
+
+                
+
+
+    
 def main():
+    inputs = read_inputs("inputs.csv")
     if(rows > 10 or cols > 10):
+        weights = read_weights("weights.csv")
         for i in range(1, cols + 1):
-            generate_hspice(file_name)
-            output_file_name = f"lif_array_{rows}_{i}"
-            run_hspice(path, file_name, output_file_name)
+            if(i == 76):                     #rerunning column 76
+                now = time.time()
+                generate_hspice(file_name, weights [i-1], inputs)
+                output_file_name = f"lif_array_{rows}_{i}"
+                run_hspice(path, file_name, output_file_name)
+                print(time.time() - now)
     else:
         generate_hspice(file_name)
         run_hspice(path, file_name, file_name)
 
 
-main()
+#main()
+spikes = read_lis()
+
+for i in range(len(spikes)):
+    print(spikes[i])
+
+
+
+
+
